@@ -62,6 +62,9 @@ class PatchEmbed(nn.Module):
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
+        # 保证输入和权重 dtype 一致
+        if x.dtype != self.proj.weight.dtype:
+            x = x.to(self.proj.weight.dtype)
         _, _, H, W = x.shape
         # patch_H, patch_W = self.patch_size
         # assert H % patch_H == 0, f"Input image height {H} is not a multiple of patch height {patch_H}"

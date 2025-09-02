@@ -94,6 +94,10 @@ def make_dataset(
     logger.info(f'using dataset: "{dataset_str}"')
 
     class_, kwargs = _parse_dataset_str(dataset_str)
+
+    import os
+    kwargs["root"] = os.getcwd()
+
     dataset = class_(transform=transform, target_transform=target_transform, **kwargs)
 
     logger.info(f"# of dataset samples: {len(dataset):,d}")
@@ -158,11 +162,11 @@ def _make_sampler(
             raise ValueError("sampler size > 0 is invalid")
         if advance > 0:
             raise ValueError("sampler advance > 0 is invalid")
-        return torch.utils.data.DistributedSampler(
+        return torch.utils.data.DistributedSampler( # 数据采样器,用于在分布式训练环境下对数据集进行采样
             dataset=dataset,
-            shuffle=shuffle,
-            seed=seed,
-            drop_last=False,
+            shuffle=shuffle, # 是否在每个epoch开始时打乱数据
+            seed=seed, # 随机种子
+            drop_last=False, # 是否丢弃最后一个不完整的batch
         )
 
     logger.info("sampler: none")

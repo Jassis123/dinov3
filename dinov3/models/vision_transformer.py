@@ -247,11 +247,11 @@ class DinoVisionTransformer(nn.Module):
                 x_norm_patch = x_norm[:, self.n_storage_tokens + 1 :]
             output.append(
                 {
-                    "x_norm_clstoken": x_norm_cls_reg[:, 0],
-                    "x_storage_tokens": x_norm_cls_reg[:, 1:],
-                    "x_norm_patchtokens": x_norm_patch,
-                    "x_prenorm": x,
-                    "masks": masks,
+                    "x_norm_clstoken": x_norm_cls_reg[:, 0], # 类标记的归一化特征。
+                    "x_storage_tokens": x_norm_cls_reg[:, 1:], # 存储标记的特征。
+                    "x_norm_patchtokens": x_norm_patch, # 补丁标记的归一化特征。
+                    "x_prenorm": x, # 归一化前的特征。
+                    "masks": masks, # 图像对应的掩码。
                 }
             )
         return output
@@ -328,10 +328,10 @@ class DinoVisionTransformer(nn.Module):
 def vit_small(patch_size=16, **kwargs):
     model = DinoVisionTransformer(
         patch_size=patch_size,
-        embed_dim=384,
-        depth=12,
-        num_heads=6,
-        ffn_ratio=4,
+        embed_dim=384, # ps:嵌入维度（特征向量维度）
+        depth=12, # ps:encoder堆叠的层数
+        num_heads=6, # ps:注意力头数
+        ffn_ratio=4, # ps:隐藏层维度与嵌入层维度比例
         **kwargs,
     )
     return model

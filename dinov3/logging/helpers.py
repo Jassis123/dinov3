@@ -62,7 +62,8 @@ class MetricLogger(object):
             f.write(json.dumps(dict_to_dump) + "\n")
         pass
 
-    def log_every(self, iterable, print_freq, header=None, n_iterations=None, start_iteration=0):
+    def log_every(self, iterable, print_freq, header=None, n_iterations=None, start_iteration=0): 
+        # 这个函数的作用是对一个可迭代对象进行遍历，并在指定的频率下打印日志信息，包括迭代次数、估计剩余时间、各项指标的值、每次迭代的时间和数据加载时间等。同时，它还会将这些信息记录到一个输出文件中（如果指定了输出文件）。
         i = start_iteration
         if not header:
             header = ""

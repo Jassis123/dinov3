@@ -498,21 +498,30 @@ def do_train(cfg, model, resume=False):
                 )
 
         # Reduce total_loss to check for NaNs, reduce metrics for logging
+        subgroup_size = distributed.get_subgroup_size() if distributed.is_enabled() else 1
         total_loss_all_ranks = total_loss.new_empty(distributed.get_subgroup_size())
-        torch.distributed.all_gather_into_tensor(
-            total_loss_all_ranks,
-            total_loss.detach(),
-            group=distributed.get_process_subgroup(),
-        )
+        if distributed.is_enabled() and torch.distributed.is_initialized():
+            torch.distributed.all_gather_into_tensor(
+                total_loss_all_ranks,
+                total_loss.detach(),
+                group=distributed.get_process_subgroup(),
+            )
+        else:
+            # single-process fallback
+            total_loss_all_ranks.zero_()
+            total_loss_all_ranks[0] = total_loss.detach()
+
         total_loss = total_loss_all_ranks.mean()
         metrics_values = torch.stack(
             [torch.as_tensor(v, dtype=torch.float32, device=total_loss.device).detach() for v in metrics_dict.values()]
         )
-        torch.distributed.all_reduce(
-            metrics_values,
-            op=torch.distributed.ReduceOp.AVG,
-            group=distributed.get_process_subgroup(),
-        )
+        # only all-reduce when distributed is initialized
+        if distributed.is_enabled() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(
+                metrics_values,
+                op=torch.distributed.ReduceOp.AVG,
+                group=distributed.get_process_subgroup(),
+            )
         metrics_dict = dict(zip(metrics_dict.keys(), metrics_values))
         if total_loss_all_ranks.isnan().any():
             consecutive_nan_count += 1
@@ -579,6 +588,7 @@ def do_train(cfg, model, resume=False):
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+# 传递参数到train.py # python train.py --config-file ssl_small_config.yaml 
 
 def main(argv=None):
     if argv is None:
@@ -609,7 +619,11 @@ def main(argv=None):
     logger.info(f"Making meta arch {meta_arch.__name__}")
     with torch.device("meta"):
         model = meta_arch(cfg)
-    model.prepare_for_distributed_training()
+    if distributed.is_enabled() and getattr(cfg.train, "compile", False):
+        model.prepare_for_distributed_training()
+    else:
+        logger.info("Skipping prepare_for_distributed_training (no distributed or compile disabled)")
+
     # Fill all values with `nans` so that we identify
     # non-initialized values
     model._apply(

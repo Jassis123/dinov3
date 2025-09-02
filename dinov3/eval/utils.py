@@ -198,7 +198,7 @@ def extract_features_with_dataloader(model, data_loader, sample_count, gather_on
 
         # update storage feature matrix
         if len(index_all) > 0:
-            features.index_copy_(0, index_all, features_all_ranks)
+            features.index_copy_(0, index_all, features_all_ranks) # 更新特征矩阵
             all_labels.index_copy_(0, index_all, labels_all_ranks)
 
     logger.info(f"Features Shape {features.shape}")

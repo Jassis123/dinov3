@@ -4,6 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import gc
+import importlib
 import logging
 from functools import partial
 
@@ -780,23 +781,39 @@ class SSLMetaArch(nn.Module):
         return all_params_groups
 
     def prepare_for_distributed_training(self) -> None:
-        process_subgroup = distributed.get_process_subgroup()
-        default_process_group = distributed.get_default_process_group()
-        inference_only_models = [self.model_ema]
-        inference_only_models_process_groups = [process_subgroup]
-        if self.has_gram_teacher:
-            inference_only_models.append(self.gram_teacher)
-            inference_only_models_process_groups.append(default_process_group)
-        if self.cfg.distillation.enabled:
-            inference_only_models.append(self.teacher)
-            inference_only_models_process_groups.append(default_process_group)
-        ac_compile_parallelize(
-            trained_model=self.student,
-            inference_only_models=inference_only_models,
-            cfg=self.cfg,
-            trained_model_process_group=process_subgroup,
-            inference_only_models_process_groups=inference_only_models_process_groups,
-        )
+        # 只有分布式且 compile=True 且 Triton 可用才执行
+        if not distributed.is_enabled():
+            logger.info("Distributed not enabled, skipping ac_compile_parallelize.")
+            return
+        if not getattr(self.cfg.train, "compile", False):
+            logger.info("Compile disabled in config, skipping ac_compile_parallelize.")
+            return
+        triton_available = importlib.util.find_spec("triton") is not None
+        if not triton_available:
+            logger.warning("Triton not available, skipping ac_compile_parallelize.")
+            return
+        # 检查 Triton 是否可用
+        triton_available = importlib.util.find_spec("triton") is not None
+        if triton_available:
+            process_subgroup = distributed.get_process_subgroup()
+            default_process_group = distributed.get_default_process_group()
+            inference_only_models = [self.model_ema]
+            inference_only_models_process_groups = [process_subgroup]
+            if self.has_gram_teacher:
+                inference_only_models.append(self.gram_teacher)
+                inference_only_models_process_groups.append(default_process_group)
+            if self.cfg.distillation.enabled:
+                inference_only_models.append(self.teacher)
+                inference_only_models_process_groups.append(default_process_group)
+            ac_compile_parallelize(
+                trained_model=self.student,
+                inference_only_models=inference_only_models,
+                cfg=self.cfg,
+                trained_model_process_group=process_subgroup,
+                inference_only_models_process_groups=inference_only_models_process_groups,
+            )
+        else:
+            logger.warning("Triton not available, skipping ac_compile_parallelize.")
 
     def broadcast_to_subgroups(self, tensor, over_dim, global_batch_size=None):
         """

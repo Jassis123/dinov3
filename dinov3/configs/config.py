@@ -38,7 +38,11 @@ class DinoV3SetupArgs:
 
 
 def apply_scaling_rules_to_cfg(cfg):  # to fix
-    assert distributed.is_enabled(), "Setup distributed to get global size !"
+    # assert distributed.is_enabled(), "Setup distributed to get global size !"
+    if not distributed.is_enabled():
+        # 单机单卡时直接返回，不应用分布式 scaling
+        return cfg
+    
     if "schedules" in cfg:
         # For schedules v2, the scaling rules are applied when building the schedules, the config is not modified
         return cfg
@@ -192,7 +196,7 @@ def setup_job(
             level=logging.INFO,
             log_to_stdout_only_in_main_process=restrict_print_to_main_process,
         )
-
+    distributed_enabled=False
     if distributed_enabled:
         distributed.enable(
             overwrite=True,

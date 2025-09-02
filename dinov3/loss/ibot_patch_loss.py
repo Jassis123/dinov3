@@ -4,6 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import math
+from venv import logger
 
 import torch
 import torch.distributed as dist
@@ -12,6 +13,7 @@ from torch import nn
 
 from dinov3.distributed import get_process_subgroup, get_subgroup_size
 
+import importlib
 
 def lossfunc(t, s, temp):  # noqa: F811
     return torch.sum(t.float() * F.log_softmax(s.float() / temp, dim=-1), dim=-1)
@@ -33,7 +35,9 @@ class SinkhornKnoppTeacher(nn.Module):
         Q = torch.exp(teacher_output / teacher_temp).t()  # Q is K-by-B for consistency with notations from our paper
         # B = Q.shape[1] * world_size # number of samples to assign
         B = n_masked_patches_tensor
-        dist.all_reduce(B, group=get_process_subgroup())
+         # 只在分布式初始化后才 all_reduce
+        if dist.is_initialized():
+            dist.all_reduce(B, group=get_process_subgroup())
         K = Q.shape[0]  # how many prototypes
 
         # make the matrix sums to 1
@@ -69,7 +73,17 @@ class iBOTPatchLoss(nn.Module):
         self.len_teacher_patch_tokens = None
         self.async_batch_center = None
         self.sinkhorn_knopp_teacher = SinkhornKnoppTeacher()
-        self.sinkhorn_knopp_teacher.compile()
+        # self.sinkhorn_knopp_teacher.compile()
+
+        try:
+            triton_available = importlib.util.find_spec("triton") is not None
+            if getattr(torch, "compile", None) is not None and triton_available:
+               # prefer torch.compile(...) for clarity/compatibility
+               self.sinkhorn_knopp_teacher = torch.compile(self.sinkhorn_knopp_teacher)
+            else:
+               logger.info("Skipping SinkhornKnoppTeacher.compile(): torch.compile or Triton not available.")
+        except Exception as e:
+            logger.warning(f"Failed to compile SinkhornKnoppTeacher, continuing without compile: {e}")
 
     def init_weights(self) -> None:
         self.center.zero_()
