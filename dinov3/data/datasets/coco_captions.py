@@ -24,9 +24,9 @@ def read_images_and_captions(root: str, split: _Split) -> List[Dict]:
     image_dir = None
     if _Split(split) == _Split.TRAIN:
         annotations_full_path = os.path.join( # 训练集的标注文件路径
-            root, "dinov3","annotations_trainval2014", "captions_train2014.json"
+            root, "annotations_trainval2014", "captions_train2014.json"
         )
-        image_dir = os.path.join(root,"dinov3", "train2014", "train2014")
+        image_dir = os.path.join(root, "train2014", "train2014")
     else:
         annotations_full_path = os.path.join(
             root, "annotations_trainval2017/annotations/captions_train2017.json"
