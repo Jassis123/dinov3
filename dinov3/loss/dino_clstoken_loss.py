@@ -41,6 +41,7 @@ class DINOLoss(nn.Module):
 
     @torch.no_grad()
     def sinkhorn_knopp_teacher(self, teacher_output, teacher_temp, n_iterations=3):
+        # 矩阵标量化用于计算教师模型输出的Softmax分布，并通过Sinkhorn-Knopp算法进行正则化处理
         # teacher_output: [batch, prototypes]
         teacher_output = teacher_output.float()
         world_size = get_subgroup_size() if dist.is_initialized() else 1

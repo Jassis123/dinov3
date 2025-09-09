@@ -368,7 +368,7 @@ class SSLMetaArch(nn.Module):
         masks_weight = data["masks_weight"].cuda(non_blocking=True)
         n_masked_patches_tensor = data["n_masked_patches"].cuda(non_blocking=True)
 
-        if self.has_gram_teacher:
+        if self.has_gram_teacher: # not use
             assert "collated_gram_teacher_crops" in data, (
                 "no gram teacher crops in the data, have you set cfg.crops.gram_teacher_crops_size?"
             )
@@ -434,22 +434,22 @@ class SSLMetaArch(nn.Module):
         n_masked_patches_tensor,
     ):
         n_crops, B, rgb, H, W = images.shape
-        images = images.flatten(0, 1)
+        images = images.flatten(0, 1) # 维度：[n_crops * B, rgb, H, W]
 
-        backbone_out = self.teacher.backbone(images, is_training=True)
+        backbone_out = self.teacher.backbone(images, is_training=True) # 输出维度：[n_crops * B, D]
         cls = backbone_out["x_norm_clstoken"]  # [n_crops * B, D]
-        reg = backbone_out["x_storage_tokens"]  # [n_crops * B, R, D]
-        ibot_patch = backbone_out["x_norm_patchtokens"]  # [n_crops * B, P, D]
+        reg = backbone_out["x_storage_tokens"]  # [n_crops * B, R, D]，R：存储token的数量-0，D：特征维度
+        ibot_patch = backbone_out["x_norm_patchtokens"]  # [n_crops * B, P, D]，P：补丁的数量-196
 
         # IBOT head only on patches that are masked for the student
-        buffer = torch.index_select(ibot_patch.flatten(0, 1), dim=0, index=mask_indices_list)
-        masked_patch_after_head = self.teacher.ibot_head(buffer)
+        buffer = torch.index_select(ibot_patch.flatten(0, 1), dim=0, index=mask_indices_list) # 维度：[n_masked_patches-507, D]
+        masked_patch_after_head = self.teacher.ibot_head(buffer) # 维度：[n_masked_patches, K]
 
         # DINO head on CLS tokens
-        cls_after_head = self.teacher.dino_head(cls)  # [n_crops * B, K]
+        cls_after_head = self.teacher.dino_head(cls)  # [n_crops * B, K]，K：原始特征维度
 
         # Center with sinkhorn-knopp
-        cls_centered = self.dino_loss.sinkhorn_knopp_teacher(
+        cls_centered = self.dino_loss.sinkhorn_knopp_teacher( # 目的：对教师模型输出进行中心化处理
             cls_after_head, teacher_temp=teacher_temp
         )  # [n_crops * B, K]
         cls_centered = cls_centered.unflatten(0, (n_crops, B))  # [n_crops, B, K]
