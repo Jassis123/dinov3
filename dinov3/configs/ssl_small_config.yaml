@@ -10,7 +10,7 @@ compute_precision:
 dino:
   loss_weight: 1.0
   global_ignore_diagonal: true  # Whether to ignore A-A and B-B global pairs, default as in DINOv2, ignored by SSLMetaArch
-  head_n_prototypes: 65536
+  head_n_prototypes: 8192 # 65536 # 原型数。含义：用于对输入特征进行聚类的原型数量
   head_bottleneck_dim: 256
   head_norm_last_layer: false
   head_nlayers: 3
@@ -37,19 +37,19 @@ ibot:
   mask_random_circular_shift: false
   force_masking_even_with_zero_weight: False
   separate_head: true
-  head_n_prototypes: 65536
+  head_n_prototypes: 8192 # 65536 暂取8192，减少资源消耗
   head_bottleneck_dim: 256
   head_norm_last_layer: false
   head_nlayers: 3
   head_hidden_dim: 2048
 gram:
-  use_loss: false # (bool) if true gram is used, else not
+  use_loss: true # 先改为true # (bool) if true gram is used, else not
   compute_stats: false # (bool): if true compute auxilliary stats
   loss_weight: 1.0 # (float): weight of the loss
-  ema_teacher: false # (bool): using the EMA teacher as GRAM teacher
+  ema_teacher: true # 先改为true # (bool): using the EMA teacher as GRAM teacher
   ckpt: null  #(str): Checkpoint to the teacher
-  it_load_ema_teacher: -1 # (int): iteration at which the ema teacher is loaded into the gram teacher
-  rep_update: true # (bool): if true GRAM teacher updated every gram.update_frequency after iter gram.it_first_update steps
+  it_load_ema_teacher: 100 #-1 # (int): iteration at which the ema teacher is loaded into the gram teacher # 该值作用为：控制EMA教师的加载时机
+  rep_update: false # true # (bool): if true GRAM teacher updated every gram.update_frequency after iter gram.it_first_update steps
   update_frequency: 50000 # (int): update frequency
   it_first_update: 0 # (int): iteration of the first update
   max_updates: null # (int): maximum number of updates to gram teacher. If None, it is unlimited
@@ -69,7 +69,7 @@ train:
   saveckp_freq: 20
   seed: 0
   num_workers: 0 # 0 means no data loading in parallel
-  OFFICIAL_EPOCH_LENGTH: 1250
+  OFFICIAL_EPOCH_LENGTH: 1250 # 会与optim.epochs相乘 125000
   monitor_gradient_norm: false
   chunk_schedule: []
   use_teacher_head: true
@@ -149,12 +149,12 @@ crops:
   global_crops_scale:
   - 0.32
   - 1.0
-  local_crops_number: 8
+  local_crops_number: 8 # 作用：生成局部crop的数量
   local_crops_scale:
   - 0.05
   - 0.32
   global_crops_size: 224
-  local_crops_size: 96
+  local_crops_size: 96 # 作用：生成局部crop的大小
   global_local_crop_pairs_ratios: 1.0
   gram_teacher_crops_size: null  # If not None, return crops for gram teacher
   localcrops_subset_of_globalcrops: false
@@ -170,14 +170,14 @@ crops:
   - 0.224
   - 0.225
 evaluation:
-  eval_period_iterations: 12500 # Every 12500 iterations
+  eval_period_iterations: 125 #12500 # Every 12500 iterations
   low_freq_every: 5
   config_files:  # Must be in fairvit/eval/configs
     high_freq: benchmark_high_frequency.yaml  # More often
     low_freq: benchmark_low_frequency.yaml  # Less often
-checkpointing:
-  period: 3750
-  max_to_keep: 3
+checkpointing: # 目的：控制训练过程中的检查点保存和恢复
+  period: 3750 # 作用：控制检查点保存的频率
+  max_to_keep: 3 # 作用：控制最多保留的检查点数量
   keep_every: 99999999999999999  # Save a checkpoint every N iterations, regardless of max_to_keep and period
 
 # Example of constant schedules with schedules v2

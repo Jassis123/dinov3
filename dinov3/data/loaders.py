@@ -96,7 +96,7 @@ def make_dataset(
     class_, kwargs = _parse_dataset_str(dataset_str)
 
     import os
-    kwargs["root"] = os.getcwd()
+    kwargs["root"] = "E:\\PrjectSpace\\OpenSourcePrjSpace\\DINOv3"
 
     dataset = class_(transform=transform, target_transform=target_transform, **kwargs)
 

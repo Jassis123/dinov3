@@ -368,7 +368,7 @@ def build_multi_resolution_data_loader_from_cfg(
 
     if len(loaders) == 1:
         data_loader = loaders[0]
-    else:
+    else: # not use
         data_loader = CombinedDataLoader(
             loaders_with_ratios=zip(loaders, loader_ratios),
             batch_size=cfg.train.batch_size_per_gpu,
@@ -394,7 +394,7 @@ def do_train(cfg, model, resume=False):
         teacher_temp_schedule,
         last_layer_lr_schedule,
     ) = build_schedulers(cfg)
-    if cfg.multidistillation.enabled:
+    if cfg.multidistillation.enabled: # not use
         register_dont_save_hooks(
             model,
             dont_save=[k for k, _ in model.state_dict().items() if k.startswith("teacher")],
@@ -500,7 +500,7 @@ def do_train(cfg, model, resume=False):
         # Reduce total_loss to check for NaNs, reduce metrics for logging
         subgroup_size = distributed.get_subgroup_size() if distributed.is_enabled() else 1
         total_loss_all_ranks = total_loss.new_empty(distributed.get_subgroup_size())
-        if distributed.is_enabled() and torch.distributed.is_initialized():
+        if distributed.is_enabled() and torch.distributed.is_initialized(): # not use
             torch.distributed.all_gather_into_tensor(
                 total_loss_all_ranks,
                 total_loss.detach(),
@@ -516,7 +516,7 @@ def do_train(cfg, model, resume=False):
             [torch.as_tensor(v, dtype=torch.float32, device=total_loss.device).detach() for v in metrics_dict.values()]
         )
         # only all-reduce when distributed is initialized
-        if distributed.is_enabled() and torch.distributed.is_initialized():
+        if distributed.is_enabled() and torch.distributed.is_initialized(): # not use
             torch.distributed.all_reduce(
                 metrics_values,
                 op=torch.distributed.ReduceOp.AVG,
@@ -635,7 +635,7 @@ def main(argv=None):
         recurse=True,
     )
     logger.info(f"Model after distributed:\n{model}")
-    if args.eval_only:
+    if args.eval_only: # not use
         model.init_weights()
         iteration = (
             model.get_checkpointer_class()(model, save_dir=cfg.train.output_dir)
