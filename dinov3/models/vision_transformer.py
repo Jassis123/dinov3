@@ -322,7 +322,8 @@ class DinoVisionTransformer(nn.Module):
         if is_training:
             return ret
         else:
-            return self.head(ret["x_norm_clstoken"])
+            return self.head(ret['x_norm_patchtokens']) # 只返回补丁标记的归一化特征。
+            # return self.head(ret["x_norm_clstoken"]) # 只返回类标记的归一化特征。
 
 
 def vit_small(patch_size=16, **kwargs):
