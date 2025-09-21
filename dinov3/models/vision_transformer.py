@@ -218,6 +218,7 @@ class DinoVisionTransformer(nn.Module):
     def forward_features_list(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
         x = []
         rope = []
+        x_store = []
         for t_x, t_masks in zip(x_list, masks_list):
             t2_x, hw_tuple = self.prepare_tokens_with_masks(t_x, t_masks)
             x.append(t2_x)
@@ -228,6 +229,8 @@ class DinoVisionTransformer(nn.Module):
             else:
                 rope_sincos = [None for r in rope]
             x = blk(x, rope_sincos)
+            x_store.append(x)
+        x = x_store[2] # 取第3个block的输出作为最终输出。
         all_x = x
         output = []
         for idx, (x, masks) in enumerate(zip(all_x, masks_list)):

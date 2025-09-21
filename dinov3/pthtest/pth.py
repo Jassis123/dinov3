@@ -31,14 +31,16 @@ class DinoDeepLab(nn.Module):
 
         # 修改输入通道 (默认2048 → 384)
         in_channels = 384
-        self.seg_head[0] = nn.Conv2d(in_channels, 256, kernel_size=1)
-        # # 修改最后一层分类输出
-        self.seg_head[4] = nn.Conv2d(256, num_classes, kernel_size=1)
+        # self.seg_head[0] = nn.Conv2d(in_channels, 256, kernel_size=1)
+        # # # 修改最后一层分类输出
+        # self.seg_head[4] = nn.Conv2d(256, num_classes, kernel_size=1)
 
-        # self.seg_head = nn.Conv2d(in_channels, num_classes, kernel_size=1)
-        # self.seg_head1 = nn.Conv2d(256, 2048, kernel_size=(3,3))
-        # self.seg_head2 = nn.Conv2d(2048, num_classes, kernel_size=1)
-        # self.seg_head = nn.Sequential(self.seg_head0, self.seg_head1, self.seg_head2)
+        self.seg_head0 = nn.Conv2d(in_channels, 256, kernel_size=(3,3), padding=1)
+        self.seg_head1 = nn.Conv2d(256, 256, kernel_size=(3,3), padding=1)
+        self.seg_head2 = nn.BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.atv0 = nn.ReLU()
+        self.seg_head3 = nn.Conv2d(256, num_classes, kernel_size=1)
+        self.seg_head = nn.Sequential(self.seg_head0, self.seg_head2, self.atv0, self.seg_head3)
 
     def forward(self, x):
         features = self.backbone(x)  # (B, 196, 384)
@@ -113,11 +115,99 @@ class KLLossForSeg(torch.nn.Module):
         loss = F.kl_div(log_probs, target_one_hot, reduction=self.reduction)
         return loss
     
+# 计算mIou指标衡量
+import numpy as np
+def compute_mIoU(preds, targets, num_classes, ignore_index=255):
+    """
+    计算 mIoU
+    preds: (N, H, W) 预测的类别id
+    targets: (N, H, W) 真实的类别id
+    num_classes: 类别数
+    ignore_index: 忽略的标签（如255）
+    """
+    # 转 numpy
+    preds = preds.detach().cpu().numpy()
+    targets = targets.detach().cpu().numpy()
+
+    ious = []
+    for cls in range(num_classes):
+        if cls == ignore_index:
+            continue
+        pred_inds = (preds == cls)
+        target_inds = (targets == cls)
+
+        if target_inds.sum() == 0:  # 数据里没这个类
+            continue
+
+        intersection = (pred_inds & target_inds).sum()
+        union = (pred_inds | target_inds).sum()
+        if union == 0:
+            iou = float('nan')  # 避免除零
+        else:
+            iou = intersection / union
+        ious.append(iou)
+
+    mIoU = np.nanmean(ious)
+    return mIoU
 
 import matplotlib.pyplot as plt
+def do_test(image, mask, model, isshow=False):
+    # model.eval()
+    model.eval() # 设置为评估模式，关闭 dropout 等
+    with torch.no_grad():
+        outputs_val = model(image)  # (B, num_classes, H, W)
+        logits_val = outputs_val["out"] if isinstance(outputs_val, dict) else outputs_val
+        segmentation_result = torch.argmax(logits_val, dim=1)
+
+        out_mask = segmentation_result[1].detach().cpu().numpy()
+        # image = images[0].permute(1, 2, 0).cpu().numpy()  # (H,W,3)
+        # mask_ori = masks[0].permute(1, 2, 0).cpu().numpy()
+        masks_c1_val = mask[1].cpu().detach().numpy()
+
+        # miou = compute_mIoU(out_mask,masks_c1_val,num_classes=151)
+        miou = compute_mIoU(segmentation_result,mask,num_classes=151)
+        print("miou:", miou)
+
+        # targets_one_hot = F.one_hot(masks_c1, num_classes=class_num)
+        if isshow:
+            plt.subplot(1, 2, 1)
+            # plt.imshow(masks)
+            plt.imshow(masks_c1_val, cmap='jet')
+            # plt.imshow(image)
+            # plt.imshow(mask_ori[:,:,1], cmap='jet')
+            plt.title("Original Image")
+
+            plt.subplot(1, 2, 2)
+            plt.imshow(out_mask, cmap='jet')
+            # plt.imshow(mask_ori[:,:,0], cmap='jet')
+            # plt.imshow(mask_ori)
+            plt.title("Segmentation")
+            plt.colorbar()
+            plt.show()
+
+import pandas as pd
+def draw_loss_curve(all_loss, epoch, issave=False):
+    df = pd.DataFrame(all_loss, columns=["Loss"])
+    plt.figure(figsize=(10, 6))
+    plt.plot(df["Loss"], label="CrossEntropyLoss", alpha=0.7)
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss")
+    plt.title("Training Loss")
+    plt.legend()
+    plt.show()
+
+    if issave:
+        plt.savefig(f"loss_curve_epoch_{epoch + 1}.png")
+        # 保存loss数据
+        import json
+        with open(f"training_metrics_epoch_{epoch + 1}.json", "w") as f:
+            for i, loss_value in enumerate(all_loss):
+                json_line = json.dumps({"iteration": i, "total_loss": loss_value})
+                f.write(json_line + "\n")
+
 def main():
     class_num = 151
-    # load_checkpoint(model, "./dinov3/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth")
+
     backbone = vit_small(
         patch_size=16,
         num_classes=class_num,  # 100 类
@@ -127,18 +217,14 @@ def main():
     load_dinov3_weights(backbone,
                         "./dinov3/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth",
                         train=False)
-    # 打印backbone参数
-    # for name, param in backbone.named_parameters():
-    #     print(f"Layer: {name}")
-    #     print(f"Weights: {param}")
-    #     print(f"Gradients: {param.grad}")
     
     model = DinoDeepLab(backbone, num_classes=class_num)  # COCO 有 100 类
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
     # 加载模型预训练权重文件
-    load_header_checkpoint(model, "./dinov3/checkpoint_epoch_imgs64_224p16_400.pth")
+    load_header_checkpoint(model, "./dinov3/checkpoint_newcov_imgs64_224p16_400.pth")
+    # load_header_checkpoint(model, "./dinov3/checkpoint_epoch_10.pth")
 
     height = 224
     width = 224
@@ -150,7 +236,7 @@ def main():
     ])
     
     loader = load_datasets(dataset_str="ADE20K:split=TRAIN", 
-                           batch_size=16,
+                           batch_size=16, # 一次加载数据集大小
                            transform=transform, 
                            target_transform=target_transform)
     
@@ -159,13 +245,15 @@ def main():
     # criterion = KLLossForSeg(num_classes=class_num, ignore_index=255)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     # do train
-    times = 100
+    times = 20
+    all_loss = [] # 记录所有的损失值
     for epoch in range(401):  # 训练2个epoch
-        # model.train()
+        model.train()
         for images, masks in loader:
             images, masks = images.to(device), masks.to(device)
             masks_c1 = masks.long()
             outputs = model(images)
+
             # 有些模型返回 {"out": tensor, "aux": tensor}，只取 "out"
             logits = outputs["out"] if isinstance(outputs, dict) else outputs
             loss = criterion(logits, masks)
@@ -173,56 +261,26 @@ def main():
             loss.backward()
             optimizer.step()
             print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
+            all_loss.append(loss.item())
+
+            do_test(images, masks_c1, model, isshow=True)
+
             # # 保留最近的 3 个检查点
             # keep_last_n_checkpoints(".", prefix="checkpoint_epoch_", n=3)
 
-            # with torch.no_grad():  # 不会跟随计算图反向传播影响性能
-            #     for name, param in model.named_parameters():
-            #         if "conv" in name:
-            #             print(f"Layer: {name}")
-            #             print(f"Weights: {param}")
-            #             print(f"Gradients: {param.grad}")
-
-            # 可视化分割结果
-            with torch.no_grad():
-                outputs_val = model(images)  # (B, num_classes, H, W)
-                logits_val = outputs_val["out"] if isinstance(outputs_val, dict) else outputs_val
-                segmentation_result = torch.argmax(logits_val, dim=1)
-
-                out_mask = segmentation_result[1].detach().cpu().numpy()
-                # image = images[0].permute(1, 2, 0).cpu().numpy()  # (H,W,3)
-                # mask_ori = masks[0].permute(1, 2, 0).cpu().numpy()
-                masks_c1_val = masks_c1[1].cpu().detach().numpy()
-
-                # targets_one_hot = F.one_hot(masks_c1, num_classes=class_num)
-
-                plt.subplot(1, 2, 1)
-                # plt.imshow(masks)
-                plt.imshow(masks_c1_val, cmap='jet')
-                # plt.imshow(image)
-                # plt.imshow(mask_ori[:,:,1], cmap='jet')
-                plt.title("Original Image")
-
-                plt.subplot(1, 2, 2)
-                plt.imshow(out_mask, cmap='jet')
-                # plt.imshow(mask_ori[:,:,0], cmap='jet')
-                # plt.imshow(mask_ori)
-                plt.title("Segmentation")
-                plt.colorbar()
-                plt.show()
-
         # 每迭代1次(times)则保存一次检查点
         if (epoch + 1) % times == 0:
-            
-            save_model_checkpoint(model, optimizer, epoch, output_dir="./",filename=f"checkpoint_epoch_imgs64_224p16_{epoch+1}.pth")
-
+            # pass
+            # print(f"Saving checkpoint for epoch {epoch + 1}")
+            # save_model_checkpoint(model, optimizer, epoch, output_dir="./",filename=f"checkpoint_newcov_imgs64_224p16_{epoch+1}.pth")
+            do_test(images, masks_c1, model, isshow=True)
+            # 保存损失函数参数值，并画出曲线
+            draw_loss_curve(all_loss, epoch, issave=False)
 
     # --------
 
     # 转换为 numpy 数组
     # segmentation_result = segmentation_result.squeeze(0).numpy()  # (256, 256)
-
-
 
     # model = nn.Conv2d(3, 3, kernel_size=(3, 3), padding=1).cuda()
     # x = torch.randn(1, 3, 224, 224).cuda()
@@ -235,30 +293,13 @@ def load_image(image_path):
     image = Image.open(image_path)
     return image
 
-
 if __name__ == "__main__":
     main()
-    # mask = load_image("E:\\PrjectSpace\\OpenSourcePrjSpace\\Dinov3\\ADEChallengeData2016\\annotations\\training\\ADE_train_00000003.png")
-    # img = load_image("E:\\PrjectSpace\\OpenSourcePrjSpace\\Dinov3\\ADEChallengeData2016\\images\\training\\ADE_train_00000003.jpg")
-    # # img.show()
-    # # print(mask.size)  # (宽,高)
-    # # reshape图像
-    # # img = img.resize((512, 512))
-    # # 打印最大值和最小值
-    # mask_tensor = torch.tensor(list(mask.getdata()))
-    # print("Max:", mask_tensor.max())
-    # print("Min:", mask_tensor.min())
-    # # 打印图像像素值矩阵
-    # # print(torch.tensor(list(img.getdata())))  # torch.Size([512*512, 3])
-    # plt.imshow(mask, cmap='jet')
-    # plt.colorbar()
-    # plt.show()
-    # print(list(img.getdata())[:10])  # 打印前10个像素
-    
 
-# # Linear Probe: 冻结 backbone
-# for p in model.backbone.parameters():
-#     p.requires_grad = False
-
-
-
+    # # PIL图像转换成Tensor图像
+    # transform = transforms.Compose([
+    #     transforms.ToTensor(),
+    #     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    # ])
+    # image_tensor = transform(image).unsqueeze(0).cuda()
+    # print("Tensor形状:", image_tensor.shape)
