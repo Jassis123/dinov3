@@ -31,16 +31,16 @@ class DinoDeepLab(nn.Module):
 
         # 修改输入通道 (默认2048 → 384)
         in_channels = 384
-        # self.seg_head[0] = nn.Conv2d(in_channels, 256, kernel_size=1)
-        # # # 修改最后一层分类输出
-        # self.seg_head[4] = nn.Conv2d(256, num_classes, kernel_size=1)
+        self.seg_head[0] = nn.Conv2d(in_channels, 256, kernel_size=1)
+        # # 修改最后一层分类输出
+        self.seg_head[4] = nn.Conv2d(256, num_classes, kernel_size=1)
 
-        self.seg_head0 = nn.Conv2d(in_channels, 256, kernel_size=(3,3), padding=1)
-        self.seg_head1 = nn.Conv2d(256, 256, kernel_size=(3,3), padding=1)
-        self.seg_head2 = nn.BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
-        self.atv0 = nn.ReLU()
-        self.seg_head3 = nn.Conv2d(256, num_classes, kernel_size=1)
-        self.seg_head = nn.Sequential(self.seg_head0, self.seg_head2, self.atv0, self.seg_head3)
+        # self.seg_head0 = nn.Conv2d(in_channels, 256, kernel_size=(3,3), padding=1)
+        # self.seg_head1 = nn.Conv2d(256, 256, kernel_size=(3,3), padding=1)
+        # self.seg_head2 = nn.BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        # self.atv0 = nn.ReLU()
+        # self.seg_head3 = nn.Conv2d(256, num_classes, kernel_size=1)
+        # self.seg_head = nn.Sequential(self.seg_head0, self.seg_head2, self.atv0, self.seg_head3)
 
     def forward(self, x):
         features = self.backbone(x)  # (B, 196, 384)
@@ -81,18 +81,31 @@ def load_datasets(dataset_str="ADE20K:split=TRAIN", batch_size=16, transform=Non
 import logging
 from pathlib import Path
 logger = logging.getLogger(__name__)
-def load_header_checkpoint(model, checkpoint_path):
+def load_header_checkpoint(model, optimizer, checkpoint_path, device="cpu"):
     if not Path(checkpoint_path).is_dir():  # PyTorch standard checkpoint
         logger.info(f"Loading pretrained weights from {checkpoint_path}")
-        state_dict = torch.load(checkpoint_path, map_location="cpu")
+        state_dict = torch.load(checkpoint_path, map_location=device)
         if "model" in state_dict:
-            state_dict = state_dict["model"]
-        state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-        state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            model_dict = state_dict["model"]
+            missing, unexpected = model.load_state_dict(model_dict, strict=False)
+            print("加载model参数成功")
+            # 加载优化器参数
+        if optimizer is not None and "optimizer" in state_dict:
+            optimizer.load_state_dict(state_dict["optimizer"])
+            print("加载optimizer参数成功")
+            # 获取上次训练的 epoch
+        if "epoch" in state_dict:
+            start_epoch = state_dict["epoch"] + 1
+        else:
+            start_epoch = 0
+
+        # # 去掉可能的 'module.' 前缀（如果是 DataParallel 保存的）
+        # state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        # state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
         logger.info("Loaded pretrained weights.")
     else:
         raise ValueError("Checkpoint path should be a file, not a directory.")
+    return model, optimizer, start_epoch
 
 class KLLossForSeg(torch.nn.Module):
     def __init__(self, num_classes, ignore_index=255, reduction='batchmean'):
@@ -151,7 +164,7 @@ def compute_mIoU(preds, targets, num_classes, ignore_index=255):
     return mIoU
 
 import matplotlib.pyplot as plt
-def do_test(image, mask, model, isshow=False):
+def do_test(image, mask, model, isshow=False,num_classes=151):
     # model.eval()
     model.eval() # 设置为评估模式，关闭 dropout 等
     with torch.no_grad():
@@ -165,7 +178,7 @@ def do_test(image, mask, model, isshow=False):
         masks_c1_val = mask[1].cpu().detach().numpy()
 
         # miou = compute_mIoU(out_mask,masks_c1_val,num_classes=151)
-        miou = compute_mIoU(segmentation_result,mask,num_classes=151)
+        miou = compute_mIoU(segmentation_result,mask,num_classes=num_classes)
         print("miou:", miou)
 
         # targets_one_hot = F.one_hot(masks_c1, num_classes=class_num)
@@ -184,30 +197,68 @@ def do_test(image, mask, model, isshow=False):
             plt.title("Segmentation")
             plt.colorbar()
             plt.show()
+    model.train()
+        
+    return miou
 
 import pandas as pd
-def draw_loss_curve(all_loss, epoch, issave=False):
-    df = pd.DataFrame(all_loss, columns=["Loss"])
-    plt.figure(figsize=(10, 6))
-    plt.plot(df["Loss"], label="CrossEntropyLoss", alpha=0.7)
-    plt.xlabel("Iteration")
-    plt.ylabel("Loss")
-    plt.title("Training Loss")
-    plt.legend()
-    plt.show()
+import json
+import os
+def draw_loss_curve(all_loss, epoch, isshow=True, issave=False, name="none"):
+    if isshow:
+        df = pd.DataFrame(all_loss, columns=["Loss"])
+        plt.figure(figsize=(10, 6))
+        plt.plot(df["Loss"], label="CrossEntropyLoss", alpha=0.7)
+        plt.xlabel("Iteration")
+        plt.ylabel("Loss")
+        plt.title("Training Loss")
+        plt.legend()
+        plt.show()
+        os.makedirs(f"./lossdata/{name}", exist_ok=True)
+        plt.savefig(f"./lossdata/{name}/loss_curve_{name}_{epoch + 1}.png")
 
     if issave:
-        plt.savefig(f"loss_curve_epoch_{epoch + 1}.png")
         # 保存loss数据
-        import json
-        with open(f"training_metrics_epoch_{epoch + 1}.json", "w") as f:
+        os.makedirs(f"./lossdata/{name}", exist_ok=True)
+        with open(f"./lossdata/{name}/training_metrics_loss_{name}.json", "a") as f: # 根目录下的 lossdata 文件夹
             for i, loss_value in enumerate(all_loss):
                 json_line = json.dumps({"iteration": i, "total_loss": loss_value})
                 f.write(json_line + "\n")
 
+# 绘制miou曲线
+def draw_miou_curve(all_miou, epoch, isshow=True, issave=False, name="none"):
+    if isshow:
+        df = pd.DataFrame(all_miou, columns=["mIoU"])
+        plt.figure(figsize=(10, 6))
+        plt.plot(df["mIoU"], label="mIoU", alpha=0.7)
+        plt.xlabel("Epoch")
+        plt.ylabel("mIoU")
+        plt.title("Validation mIoU")
+        plt.legend()
+        plt.show()
+        os.makedirs(f"./mioudata/{name}", exist_ok=True)
+        plt.savefig(f"./mioudata/{name}/miou_curve_epoch_{epoch + 1}.png")
+
+    if issave:
+        # 保存miou数据
+        import json
+        os.makedirs(f"./mioudata/{name}", exist_ok=True)
+        with open(f"./mioudata/{name}/miou_metrics_epoch_{name}.json", "a") as f:
+            for i, miou_value in enumerate(all_miou):
+                json_line = json.dumps({"epoch": i * 20 + 1, "mIoU": miou_value})
+                f.write(json_line + "\n")
+
+from unetclass import DinoUNet
 def main():
     class_num = 151
-
+    segheadname = "deeplab-v1"
+    isloadckpt = True # 是否加载权重
+    ckptepoch = 600
+    iseval = True # 是否为权重测试模式
+    height = 224
+    width = 224
+    start_epoch = 0
+    
     backbone = vit_small(
         patch_size=16,
         num_classes=class_num,  # 100 类
@@ -218,16 +269,27 @@ def main():
                         "./dinov3/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth",
                         train=False)
     
-    model = DinoDeepLab(backbone, num_classes=class_num)  # COCO 有 100 类
+    if segheadname.split("-")[0] == "unet":
+        model = DinoUNet(backbone=backbone, num_classes=class_num, backbone_out_channels=384,
+                    decoder_channels=(384, 256), use_transpose=True, final_upsample=True)
+    elif segheadname.split("-")[0] == "deeplab":
+        model = DinoDeepLab(backbone, num_classes=class_num)
+    else:
+        raise ValueError("只支持 unet 分割头")
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
 
+    # 3. 定义损失和优化器
+    criterion = nn.CrossEntropyLoss(ignore_index=255)  # 忽略背景类
+    # criterion = KLLossForSeg(num_classes=class_num, ignore_index=255)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
     # 加载模型预训练权重文件
-    load_header_checkpoint(model, "./dinov3/checkpoint_newcov_imgs64_224p16_400.pth")
+    if isloadckpt:
+        _,_, start_epoch = load_header_checkpoint(model, optimizer, f"./dinov3/ckpt_{segheadname}_imgs64_224p16_{ckptepoch}.pth", device=device)
     # load_header_checkpoint(model, "./dinov3/checkpoint_epoch_10.pth")
 
-    height = 224
-    width = 224
     transform = transforms.Compose([transforms.Resize((height, width)), transforms.ToTensor()])
     target_transform = transforms.Compose([
         transforms.Resize((height, width), interpolation=transforms.InterpolationMode.NEAREST),
@@ -240,14 +302,11 @@ def main():
                            transform=transform, 
                            target_transform=target_transform)
     
-    # 3. 定义损失和优化器
-    criterion = nn.CrossEntropyLoss(ignore_index=255)  # 忽略背景类
-    # criterion = KLLossForSeg(num_classes=class_num, ignore_index=255)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     # do train
-    times = 20
+    times = 100
     all_loss = [] # 记录所有的损失值
-    for epoch in range(401):  # 训练2个epoch
+    all_miou = [] # 记录所有的miou值
+    for epoch in range(start_epoch, 901):  
         model.train()
         for images, masks in loader:
             images, masks = images.to(device), masks.to(device)
@@ -263,7 +322,8 @@ def main():
             print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}")
             all_loss.append(loss.item())
 
-            do_test(images, masks_c1, model, isshow=True)
+            if iseval:
+                do_test(images, masks_c1, model, isshow=True,num_classes=class_num)
 
             # # 保留最近的 3 个检查点
             # keep_last_n_checkpoints(".", prefix="checkpoint_epoch_", n=3)
@@ -271,11 +331,15 @@ def main():
         # 每迭代1次(times)则保存一次检查点
         if (epoch + 1) % times == 0:
             # pass
-            # print(f"Saving checkpoint for epoch {epoch + 1}")
-            # save_model_checkpoint(model, optimizer, epoch, output_dir="./",filename=f"checkpoint_newcov_imgs64_224p16_{epoch+1}.pth")
-            do_test(images, masks_c1, model, isshow=True)
+            if not iseval:
+                print(f"Saving checkpoint for epoch {epoch + 1}")
+                save_model_checkpoint(model, optimizer, epoch, output_dir="./",filename=f"ckpt_{segheadname}_imgs64_224p16_{epoch+1}.pth")
+            miou = do_test(images, masks_c1, model, isshow=iseval, num_classes=class_num)
+            all_miou.append(miou)
             # 保存损失函数参数值，并画出曲线
-            draw_loss_curve(all_loss, epoch, issave=False)
+            if not iseval:
+                draw_loss_curve(all_loss, epoch, isshow=True, issave=True, name=segheadname)
+                draw_miou_curve(all_miou, epoch, isshow=False, issave=True, name=segheadname)
 
     # --------
 
