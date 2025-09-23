@@ -157,6 +157,7 @@ class DinoVisionTransformer(nn.Module):
 
         # This norm is applied to everything, or when untying, to patch and mask tokens.
         self.norm = norm_layer_cls(embed_dim)
+        # self.norm_storeall_layer = norm_layer_cls(embed_dim * depth)
 
         self.untie_cls_and_patch_norms = untie_cls_and_patch_norms
         if untie_cls_and_patch_norms:
@@ -230,8 +231,12 @@ class DinoVisionTransformer(nn.Module):
                 rope_sincos = [None for r in rope]
             x = blk(x, rope_sincos)
             x_store.append(x)
-        x = x_store[2] # 取第3个block的输出作为最终输出。
+        x = x_store[2] # 取第3个block的输出作为最终输出。(16,197,384)
         all_x = x
+        x_store = sum(x_store,[])
+        # x_store = torch.cat(x_store, dim=2)
+        x_store = torch.stack(x_store, dim=0)
+        x_norm_store = x_store[:,:,1:]
         output = []
         for idx, (x, masks) in enumerate(zip(all_x, masks_list)):
             if self.untie_cls_and_patch_norms or self.untie_global_and_local_cls_norm:
@@ -248,6 +253,11 @@ class DinoVisionTransformer(nn.Module):
                 x_norm = self.norm(x)
                 x_norm_cls_reg = x_norm[:, : self.n_storage_tokens + 1]
                 x_norm_patch = x_norm[:, self.n_storage_tokens + 1 :]
+
+                x_norm_store = self.norm(x_norm_store)
+                # 拼接所有块的归一化特征
+                x_norm_store = x_norm_store.permute(1, 2, 3, 0)
+                x_norm_store = x_norm_store.reshape(x_norm_store.shape[0],x_norm_store.shape[1],-1)
             output.append(
                 {
                     "x_norm_clstoken": x_norm_cls_reg[:, 0], # 类标记的归一化特征。
@@ -255,6 +265,7 @@ class DinoVisionTransformer(nn.Module):
                     "x_norm_patchtokens": x_norm_patch, # 补丁标记的归一化特征。
                     "x_prenorm": x, # 归一化前的特征。
                     "masks": masks, # 图像对应的掩码。
+                    "x_norm_layers": x_norm_store, # 所有块的拼接归一化特征。
                 }
             )
         return output
@@ -325,8 +336,9 @@ class DinoVisionTransformer(nn.Module):
         if is_training:
             return ret
         else:
-            return self.head(ret['x_norm_patchtokens']) # 只返回补丁标记的归一化特征。
+            # return self.head(ret['x_norm_patchtokens']) # 只返回补丁标记的归一化特征。
             # return self.head(ret["x_norm_clstoken"]) # 只返回类标记的归一化特征。
+            return self.head(ret['x_norm_layers']) # 只返回所有块的拼接归一化特征。
 
 
 def vit_small(patch_size=16, **kwargs):

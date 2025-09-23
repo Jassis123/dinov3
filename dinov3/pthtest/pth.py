@@ -59,6 +59,59 @@ class DinoDeepLab(nn.Module):
         # 否则 features 应该是 (B, C, H, W)
         # return {"out": self.seg_head(features)}
 
+class ConvBlock(nn.Module):
+    """基本卷积块：Conv -> BN -> ReLU"""
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True)
+        )
+    def forward(self, x):
+        return self.block(x)
+
+class MlpClassifier(nn.Module):
+    def __init__(self, backbone, embed_dim=384, num_classes=151, img_size=224, input_dim=384):
+        super().__init__()
+        self.backbone = backbone
+        self.num_classes = num_classes
+        self.img_size = img_size
+
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, 2048),
+            nn.ReLU(),
+            nn.Linear(2048, num_classes)
+        )
+        
+        self.proj = nn.Linear(input_dim, embed_dim)
+
+        # Step2: refine卷积
+        self.refine = nn.Sequential(
+            ConvBlock(embed_dim, embed_dim),
+            ConvBlock(embed_dim, embed_dim)
+        )
+
+        # Step3: 最终分类器
+        self.classifier = nn.Conv2d(embed_dim, num_classes, kernel_size=1)
+
+    def forward(self, x):
+        feature = self.backbone(x)
+        # feature = self.mlp(feature)
+        feature = self.proj(feature)
+        
+        B, N_patch, D = feature.shape
+        h = w = int(N_patch ** 0.5)  # 假设是方形patch布局 
+        # feature = feature.permute(0, 2, 1).reshape(B, D, h, w)
+
+        feature = feature.transpose(1, 2).reshape(B, -1, h, w)
+        feature = self.refine(feature)
+        feature = F.interpolate(feature, size=(self.img_size, self.img_size), mode="bilinear", align_corners=False)
+        feature = self.classifier(feature)
+
+        # # out = self.seg_head(x)  # (B, num_classes, 14, 14)
+        # out = F.interpolate(feature, size=x.shape[-2:], mode="bilinear", align_corners=False)
+        return {"out": feature}
 
 def save_model_checkpoint(model, optimizer, epoch, output_dir, filename="checkpoint.pth"):
     ckpt_path = output_dir 
@@ -68,13 +121,12 @@ def save_model_checkpoint(model, optimizer, epoch, output_dir, filename="checkpo
         "epoch": epoch,
     }, ckpt_path + filename)
 
-
 from torchvision import transforms
-def load_datasets(dataset_str="ADE20K:split=TRAIN", batch_size=16, transform=None, target_transform=None):
+def load_datasets(dataset_str="ADE20K:split=TRAIN", batch_size=16, transform=None, target_transform=None, shuffle=True):
     # 用仓库的解析器创建数据集（替换 /path/to/ade20k 为你的 ADE20K 根目录）
     # split 可以等于： TRAIN 或 VAL; 等于VAL时，读取验证集
     ds = make_dataset(dataset_str=dataset_str, transform=transform, target_transform=target_transform)
-    loader = torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0)
+    loader = torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=shuffle, num_workers=0)
     return loader
 
 # 加载权重初始化模型
@@ -245,19 +297,41 @@ def draw_miou_curve(all_miou, epoch, isshow=True, issave=False, name="none"):
         os.makedirs(f"./mioudata/{name}", exist_ok=True)
         with open(f"./mioudata/{name}/miou_metrics_epoch_{name}.json", "a") as f:
             for i, miou_value in enumerate(all_miou):
-                json_line = json.dumps({"epoch": i * 20 + 1, "mIoU": miou_value})
+                json_line = json.dumps({"epoch": i * 20 + 1, "mIoU": miou_value.item()})
                 f.write(json_line + "\n")
+
+# 在所有图像上测试miou
+def eval_all_images(model, batchsize, transform, target_transform, num_classes=151, device="cpu"):
+    all_miou = []
+    loader = load_datasets(dataset_str="ADE20K:split=TRAIN", 
+                           batch_size=batchsize, # 一次加载数据集大小
+                           transform=transform, 
+                           target_transform=target_transform,
+                           shuffle=False)
+    
+    for i, (image, mask) in enumerate(loader):
+        image, mask = image.to(device), mask.to(device)
+        outputs_val = model(image)  # (B, num_classes, H, W)
+        logits_val = outputs_val["out"] if isinstance(outputs_val, dict) else outputs_val
+        segmentation_result = torch.argmax(logits_val, dim=1)
+
+        miou = compute_mIoU(segmentation_result, mask, num_classes=num_classes)
+        all_miou.append(miou)
+    all_miou = torch.tensor(all_miou).mean()
+    print("miou:", all_miou)
+    return all_miou
 
 from unetclass import DinoUNet
 def main():
     class_num = 151
-    segheadname = "deeplab-v1"
+    segheadname = "mlp-v2"
     isloadckpt = True # 是否加载权重
-    ckptepoch = 600
+    ckptepoch = 800
     iseval = True # 是否为权重测试模式
     height = 224
     width = 224
     start_epoch = 0
+    end_epoch = 901
     
     backbone = vit_small(
         patch_size=16,
@@ -274,6 +348,8 @@ def main():
                     decoder_channels=(384, 256), use_transpose=True, final_upsample=True)
     elif segheadname.split("-")[0] == "deeplab":
         model = DinoDeepLab(backbone, num_classes=class_num)
+    elif segheadname.split("-")[0] == "mlp":
+        model = MlpClassifier(backbone, embed_dim=384, num_classes=class_num, img_size=224, input_dim=384*12)
     else:
         raise ValueError("只支持 unet 分割头")
 
@@ -306,7 +382,7 @@ def main():
     times = 100
     all_loss = [] # 记录所有的损失值
     all_miou = [] # 记录所有的miou值
-    for epoch in range(start_epoch, 901):  
+    for epoch in range(start_epoch, end_epoch):  
         model.train()
         for images, masks in loader:
             images, masks = images.to(device), masks.to(device)
@@ -324,6 +400,12 @@ def main():
 
             if iseval:
                 do_test(images, masks_c1, model, isshow=True,num_classes=class_num)
+                eval_all_images(model, 
+                                batchsize=16, 
+                                transform=transform, 
+                                target_transform=target_transform, 
+                                num_classes=class_num,
+                                device=device)
 
             # # 保留最近的 3 个检查点
             # keep_last_n_checkpoints(".", prefix="checkpoint_epoch_", n=3)
@@ -334,11 +416,17 @@ def main():
             if not iseval:
                 print(f"Saving checkpoint for epoch {epoch + 1}")
                 save_model_checkpoint(model, optimizer, epoch, output_dir="./",filename=f"ckpt_{segheadname}_imgs64_224p16_{epoch+1}.pth")
-            miou = do_test(images, masks_c1, model, isshow=iseval, num_classes=class_num)
+            miou = eval_all_images(model, 
+                                batchsize=16, 
+                                transform=transform, 
+                                target_transform=target_transform, 
+                                num_classes=class_num,
+                                device=device)
+            do_test(images, masks_c1, model, isshow=iseval, num_classes=class_num)
             all_miou.append(miou)
             # 保存损失函数参数值，并画出曲线
             if not iseval:
-                draw_loss_curve(all_loss, epoch, isshow=True, issave=True, name=segheadname)
+                draw_loss_curve(all_loss, epoch, isshow=False, issave=True, name=segheadname)
                 draw_miou_curve(all_miou, epoch, isshow=False, issave=True, name=segheadname)
 
     # --------
